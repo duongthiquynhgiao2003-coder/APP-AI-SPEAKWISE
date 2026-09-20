@@ -1,0 +1,6 @@
+{
+  "name": "SpeakWise AI",
+  "description": "Smart Speaking Practice & Assessment app for English learning according to Vietnam GDPT 2018 curriculum",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

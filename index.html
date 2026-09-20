@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="vi" class="dark h-full">
+  <head>
+    <script>
+      // Fix: Ensure window.fetch has both getter & setter to prevent errors from extensions/wrappers
+      (function() {
+        try {
+          var originalFetch = typeof window !== 'undefined' && window.fetch ? window.fetch.bind(window) : undefined;
+          var currentFetch = originalFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return currentFetch;
+            },
+            set: function(val) {
+              currentFetch = typeof val === 'function' ? val : currentFetch;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          try {
+            if (typeof Window !== 'undefined' && Window.prototype) {
+              var protoFetch = Window.prototype.fetch ? Window.prototype.fetch.bind(window) : undefined;
+              var currentProtoFetch = protoFetch;
+              Object.defineProperty(Window.prototype, 'fetch', {
+                get: function() {
+                  return currentProtoFetch;
+                },
+                set: function(val) {
+                  currentProtoFetch = typeof val === 'function' ? val : currentProtoFetch;
+                },
+                configurable: true,
+                enumerable: true
+              });
+            }
+          } catch (err) {}
+        }
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SPEAKWISE AI – Smart Speaking Practice & Assessment</title>
+    <meta name="description" content="Luyện nói thông minh – Tự tin giao tiếp – Smart Speaking Practice & Assessment theo chương trình GDPT 2018" />
+    <meta property="og:title" content="SPEAKWISE AI – Smart Speaking Practice & Assessment" />
+    <meta property="og:description" content="Luyện nói thông minh – Tự tin giao tiếp – Smart Speaking Practice & Assessment theo chương trình GDPT 2018" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  </head>
+  <body class="min-h-full bg-[#03060f] text-slate-100 antialiased selection:bg-cyan-500 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
