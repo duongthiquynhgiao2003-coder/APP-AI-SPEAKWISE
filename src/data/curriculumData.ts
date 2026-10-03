@@ -469,19 +469,34 @@ export const FEEDBACK_DICT: Record<string, { high: FeedbackEntry[]; mid: Feedbac
   },
   presentation: {
     high: [
-      { e: "Confident demeanor and highly engaging interaction.", v: "Phong thái tự tin và tương tác cực kỳ cuốn hút." },
-      { e: "Great eye contact and natural body language.", v: "Giao tiếp bằng mắt tuyệt vời, ngôn ngữ cơ thể tự nhiên." },
-      { e: "Captivating presentation style.", v: "Phong cách thuyết trình rất thu hút." }
+      {
+        e: "Confident demeanor with natural eye contact to the camera lens. Clear voice projection, upright posture, and purposeful body language throughout the presentation.",
+        v: "Phong thái tự tin, duy trì giao tiếp mắt tự nhiên qua ống kính camera. Giọng nói to rõ, tư thế ngồi thẳng ngay ngắn và ngôn ngữ cơ thể đĩnh đạc trong suốt bài nói."
+      },
+      {
+        e: "Excellent camera presence and engaging interaction. Strong vocal clarity with relaxed, professional posture and confident delivery.",
+        v: "Tương tác qua camera xuất sắc và cuốn hút. Giọng nói rõ ràng truyền cảm kết hợp tư thế đĩnh đạc, chuyên nghiệp và phong thái tự tin."
+      }
     ],
     mid: [
-      { e: "Good eye contact, but looks a bit nervous.", v: "Giao tiếp bằng mắt tốt, nhưng trông hơi căng thẳng." },
-      { e: "Body language is slightly stiff, try to relax.", v: "Ngôn ngữ cơ thể hơi cứng, hãy cố gắng thư giãn." },
-      { e: "Reads from notes occasionally, losing connection.", v: "Thỉnh thoảng nhìn tài liệu, làm giảm sự kết nối." }
+      {
+        e: "Good camera presence and steady posture. Maintain more consistent eye contact, project voice with greater energy, and avoid glancing at notes to boost confidence.",
+        v: "Tương tác qua camera khá tốt, tư thế ngồi ổn định. Cần duy trì nhìn thẳng ống kính đều đặn hơn, nói to dõng dạc và hạn chế nhìn tài liệu để tăng độ tự tin."
+      },
+      {
+        e: "Audible voice and appropriate posture. Practice looking directly into the camera lens more frequently to enhance audience engagement.",
+        v: "Âm lượng vừa đủ nghe và tư thế phù hợp. Hãy rèn luyện nhìn thẳng vào ống kính thường xuyên hơn để tăng tính kết nối với người nghe."
+      }
     ],
     low: [
-      { e: "Lacks eye contact. Seems to be reading a script.", v: "Thiếu giao tiếp bằng mắt. Có vẻ như đang đọc kịch bản." },
-      { e: "Very stiff posture, looks uncomfortable.", v: "Tư thế quá cứng nhắc, trông không thoải mái." },
-      { e: "Needs to project voice and look at the camera.", v: "Cần nói to rõ hơn và nhìn vào ống kính camera." }
+      {
+        e: "Needs improvement: Look directly at the camera lens instead of reading a script, project voice louder and more clearly, and relax posture to present with confidence.",
+        v: "Cần cải thiện: Hướng mắt nhìn thẳng ống kính camera thay vì nhìn kịch bản, nói to rõ ràng hơn và thả lỏng tư thế ngồi/đứng để bài thuyết trình tự tin hơn."
+      },
+      {
+        e: "Needs improvement: Lacks eye contact and appears tense. Speak louder, look up at the camera, and practice speaking freely without relying on notes.",
+        v: "Cần cải thiện: Thiếu giao tiếp mắt và còn căng thẳng. Hãy nói to hơn, ngẩng nhìn ống kính và tập nói tự nhiên không phụ thuộc vào tài liệu."
+      }
     ]
   }
 };

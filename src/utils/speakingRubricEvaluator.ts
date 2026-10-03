@@ -492,11 +492,25 @@ export function evaluateSpeakingRubric(params: {
       e: `Addressed the speaking task (${taskTitleEn}). Ideas are relevant to the requested topic.`,
       v: `Hoàn thành yêu cầu nhiệm vụ (${taskTitleVi}). Bám sát mục tiêu bài luyện nói và chia sẻ thông tin theo chủ đề.`,
     },
-    presentation: hasVideo
-      ? {
-          e: 'Maintained positive camera presence with upright posture and confident expression.',
-          v: 'Tương tác qua ống kính tự nhiên, tư thế ngồi thẳng và phong thái trình bày tự tin.',
-        }
+    presentation: hasVideo && prScore !== undefined
+      ? (() => {
+          if (prScore >= 8.2) {
+            return {
+              e: 'Confident demeanor with natural eye contact to the camera lens. Clear voice projection, upright posture, and purposeful body language throughout the presentation.',
+              v: 'Phong thái tự tin, duy trì giao tiếp mắt tự nhiên qua ống kính camera. Giọng nói to rõ, tư thế ngồi thẳng ngay ngắn và ngôn ngữ cơ thể đĩnh đạc trong suốt bài nói.',
+            };
+          }
+          if (prScore >= 6.5) {
+            return {
+              e: 'Good camera presence and steady posture. Maintain more consistent eye contact, project voice with greater energy, and avoid glancing at notes to boost confidence.',
+              v: 'Tương tác qua camera khá tốt, tư thế ngồi ổn định. Cần duy trì nhìn thẳng ống kính đều đặn hơn, nói to dõng dạc và hạn chế nhìn tài liệu để tăng độ tự tin.',
+            };
+          }
+          return {
+            e: 'Needs improvement: Look directly at the camera lens instead of reading a script, project voice louder and more clearly, and relax posture to present with confidence.',
+            v: 'Cần cải thiện: Hướng mắt nhìn thẳng ống kính camera thay vì nhìn kịch bản, nói to rõ ràng hơn và thả lỏng tư thế ngồi/đứng để bài thuyết trình tự tin hơn.',
+          };
+        })()
       : undefined,
   };
 
@@ -507,6 +521,9 @@ export function evaluateSpeakingRubric(params: {
   ];
   if (pScore >= 8.0) {
     strengths.push('Âm lượng to, phát âm các nguyên âm chính chuẩn xác');
+  }
+  if (hasVideo && prScore && prScore >= 8.2) {
+    strengths.push('Phong thái tự tin, duy trì giao tiếp mắt tốt qua camera');
   }
 
   const improvementPriorities: string[] = [];
@@ -521,6 +538,9 @@ export function evaluateSpeakingRubric(params: {
   }
   if (sentenceComparisons.length > 0) {
     improvementPriorities.push(`Thực hành cấu trúc câu mở rộng: "${sentenceComparisons[0].improvedSentence}"`);
+  }
+  if (hasVideo && prScore && prScore < 7.0) {
+    improvementPriorities.push('Tiêu chí 7: Hướng mắt nhìn thẳng ống kính camera và thả lỏng tư thế để bài thuyết trình tự nhiên hơn');
   }
 
   return {
