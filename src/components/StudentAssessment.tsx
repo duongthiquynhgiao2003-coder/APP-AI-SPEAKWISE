@@ -60,6 +60,7 @@ import {
   downloadSpeakingReportPdf,
   printSpeakingReport,
   captureVideoSnapshot,
+  generateAudioAcousticCardPngDataUrl,
 } from '../utils/speakingReportExporter';
 
 interface StudentAssessmentProps {
@@ -853,12 +854,31 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       // Simulate speech analysis pipeline delay
       await new Promise((resolve) => setTimeout(resolve, 800));
 
-      const activeDuration =
-        inputMethod === 'record'
-          ? Math.max(audioSeconds, 6)
-          : inputMethod === 'video'
-          ? Math.max(videoSeconds, 6)
-          : 15; // default estimation for uploaded audio/video
+      const activeDuration = (() => {
+        if (inputMethod === 'record') {
+          const audioDur = recordedAudioRef.current?.duration;
+          if (audioDur && !isNaN(audioDur) && audioDur > 0) {
+            return Math.round(audioDur);
+          }
+          if (audioSeconds > 0) return audioSeconds;
+          return 7;
+        }
+        if (inputMethod === 'video') {
+          const videoEl = document.querySelector('#recordedVideoCustomPlayer video, #videoPreviewContainer video, video') as HTMLVideoElement | null;
+          const videoDur = videoEl?.duration;
+          if (videoDur && !isNaN(videoDur) && videoDur > 0) {
+            return Math.round(videoDur);
+          }
+          if (videoSeconds > 0) return videoSeconds;
+          return 8;
+        }
+        const mediaEl = document.querySelector('audio, video') as HTMLMediaElement | null;
+        const mediaDur = mediaEl?.duration;
+        if (mediaDur && !isNaN(mediaDur) && mediaDur > 0) {
+          return Math.round(mediaDur);
+        }
+        return uploadedFile?.type.startsWith('video') ? 12 : 8;
+      })();
 
       // Use actual student transcript (normalized with proper capitals & terminal periods)
       // or generate contextual transcript from sample if speech API didn't fire
@@ -941,17 +961,45 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     try {
       let videoSnapUrl = '';
       let videoSnapTime = '';
+      let audioSnapUrl = '';
+      const now = new Date();
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      const timestampFormatted = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+      const totalDur = currentResult.speechMetrics?.durationSeconds || 7;
+      let captureTimeSeconds: number;
+
       if (currentResult.hasVideo || inputMethod === 'video' || (uploadedFile && uploadedFile.type.startsWith('video/'))) {
+        const videoEl = document.querySelector('#recordedVideoCustomPlayer video, #videoPreviewContainer video, video') as HTMLVideoElement | null;
+        const mediaTime = videoEl?.currentTime;
+        captureTimeSeconds = mediaTime && mediaTime > 0.5 && mediaTime < totalDur
+          ? Math.round(mediaTime)
+          : Math.max(1, Math.min(totalDur - 1, Math.round(totalDur * (0.28 + ((totalDur % 4) * 0.05))) || 2));
+
         try {
-          const snap = await captureVideoSnapshot();
+          const snap = await captureVideoSnapshot(null, captureTimeSeconds);
           if (snap) {
             videoSnapUrl = snap;
-            const now = new Date();
-            const pad = (n: number) => n.toString().padStart(2, '0');
-            videoSnapTime = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+            videoSnapTime = timestampFormatted;
           }
         } catch (e) {
           console.warn('Capture snapshot error:', e);
+        }
+      } else {
+        const audioEl = recordedAudioRef.current || (document.querySelector('audio') as HTMLAudioElement | null);
+        const mediaTime = audioEl?.currentTime;
+        captureTimeSeconds = mediaTime && mediaTime > 0.5 && mediaTime < totalDur
+          ? Math.round(mediaTime)
+          : Math.max(1, Math.min(totalDur - 1, Math.round(totalDur * (0.28 + ((totalDur % 4) * 0.05))) || 2));
+
+        try {
+          audioSnapUrl = await generateAudioAcousticCardPngDataUrl({
+            timestampStr: timestampFormatted,
+            totalDurationSeconds: totalDur,
+            currentPositionSeconds: captureTimeSeconds,
+          });
+        } catch (e) {
+          console.warn('Audio card PNG generation error:', e);
         }
       }
 
@@ -964,7 +1012,10 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         scale: scoringScale,
         result: currentResult,
         videoSnapshotUrl: videoSnapUrl || undefined,
-        videoSnapshotTime: videoSnapTime || undefined,
+        videoSnapshotTime: videoSnapTime || timestampFormatted,
+        audioSnapshotUrl: audioSnapUrl || undefined,
+        audioSnapshotTime: timestampFormatted,
+        captureTimeSeconds,
       };
 
       if (format === 'pdf') {

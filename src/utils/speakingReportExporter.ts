@@ -11,6 +11,9 @@ export interface ReportExportData {
   assessmentDate?: string;
   videoSnapshotUrl?: string;
   videoSnapshotTime?: string;
+  audioSnapshotUrl?: string;
+  audioSnapshotTime?: string;
+  captureTimeSeconds?: number;
 }
 
 /**
@@ -23,12 +26,149 @@ export function formatTimeMmSs(seconds: number): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
+export interface AudioAcousticCardOptions {
+  timestampStr?: string;
+  totalDurationSeconds?: number;
+  currentPositionSeconds?: number;
+}
+
+/**
+ * Generates an ultra-crisp vector SVG matching the Student Audio Recording • Acoustic Sync card (Image 1 & 2)
+ */
+export function generateAudioAcousticCardSvg(options?: AudioAcousticCardOptions): string {
+  const timestampStr = options?.timestampStr || (() => {
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  })();
+
+  const totalDur = Math.max(2, Math.round(options?.totalDurationSeconds || 7));
+  const currentPos = options?.currentPositionSeconds !== undefined
+    ? Math.max(1, Math.min(totalDur - 1, Math.round(options.currentPositionSeconds)))
+    : (() => {
+        const ratio = 0.28 + ((totalDur % 4) * 0.05);
+        return Math.max(1, Math.min(totalDur - 1, Math.round(totalDur * ratio) || 2));
+      })();
+
+  const currTimeStr = formatTimeMmSs(currentPos);
+  const totalTimeStr = formatTimeMmSs(totalDur);
+  const progressRatio = Math.max(0.05, Math.min(0.95, currentPos / totalDur));
+  const trackWidth = 505;
+  const progressWidth = Math.round(trackWidth * progressRatio);
+
+  // 45 symmetrical acoustic bars matching speech frequency modulation from Image 1
+  const barHeights = [
+    10, 16, 24, 38, 48, 56, 44, 32, 22, 16,
+    28, 44, 58, 62, 50, 36, 22, 16, 24, 42,
+    56, 62, 54, 38, 24, 16, 22, 38, 52, 60,
+    52, 36, 22, 14, 20, 36, 50, 58, 48, 34,
+    22, 16, 12, 10, 8
+  ];
+
+  const barCount = barHeights.length;
+  const startX = 36;
+  const endX = 684;
+  const stepX = (endX - startX) / (barCount - 1);
+  const barWidth = 5.5;
+  const centerY = 94;
+
+  const barsSvg = barHeights.map((h, i) => {
+    const x = (startX + i * stepX).toFixed(1);
+    const y = (centerY - h / 2).toFixed(1);
+    return `<rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="2.75" fill="#38bdf8"/>`;
+  }).join('');
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 185" width="100%" height="auto" style="display: block; max-width: 720px; margin: 0 auto; border-radius: 12px; overflow: hidden; background: #070e1c;">
+    <rect x="0.5" y="0.5" width="719" height="184" rx="12" fill="#070e1c" stroke="#0ea5e9" stroke-opacity="0.35" stroke-width="1.5"/>
+    <rect x="0" y="0" width="720" height="40" fill="#0c1930"/>
+    
+    <!-- Topbar -->
+    <circle cx="28" cy="24" r="4.5" fill="#10b981"/>
+    <text x="42" y="28" fill="#34d399" font-size="11.5" font-weight="800" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" letter-spacing="0.6">STUDENT AUDIO RECORDING • ACOUSTIC SYNC</text>
+    <text x="692" y="28" text-anchor="end" fill="#cbd5e1" font-size="11" font-weight="700" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace, sans-serif" letter-spacing="0.3">${timestampStr}</text>
+    <line x1="0" y1="40" x2="720" y2="40" stroke="#1e293b" stroke-width="1"/>
+    
+    <!-- Waveform Acoustic Bars -->
+    ${barsSvg}
+    
+    <!-- Bottom Controls Overlay -->
+    <polygon points="26,155 37,162 26,169" fill="#ffffff"/>
+    <text x="46" y="166" fill="#ffffff" font-size="12" font-weight="700" font-family="monospace, -apple-system, sans-serif">${currTimeStr} / ${totalTimeStr}</text>
+    
+    <rect x="155" y="160" width="${trackWidth}" height="3.5" rx="1.75" fill="#334155"/>
+    <rect x="155" y="160" width="${progressWidth}" height="3.5" rx="1.75" fill="#00b4d8"/>
+    
+    <!-- Speaker Volume Icon -->
+    <polygon points="675,157 679,157 683,153 683,171 679,167 675,167" fill="#ffffff"/>
+    <path d="M686 156 C688 158, 688 166, 686 168" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M689 153 C693 157, 693 167, 689 171" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>`;
+}
+
+/**
+ * Generates a PNG Base64 Data URL for the Audio Recording Acoustic Card for embedding in Word
+ */
+export function generateAudioAcousticCardPngDataUrl(
+  options?: AudioAcousticCardOptions,
+  width = 720,
+  height = 185
+): Promise<string> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      resolve('');
+      return;
+    }
+
+    try {
+      const svgStr = generateAudioAcousticCardSvg(options);
+      const canvas = document.createElement('canvas');
+      canvas.width = width * 2;
+      canvas.height = height * 2;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve('');
+        return;
+      }
+
+      ctx.scale(2, 2);
+
+      const img = new Image();
+      const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+
+      img.onload = () => {
+        try {
+          ctx.drawImage(img, 0, 0, width, height);
+          URL.revokeObjectURL(url);
+          const dataUrl = canvas.toDataURL('image/png');
+          resolve(dataUrl);
+        } catch (e) {
+          console.warn('Canvas drawImage for audio card error:', e);
+          URL.revokeObjectURL(url);
+          resolve('');
+        }
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve('');
+      };
+
+      img.src = url;
+    } catch (err) {
+      console.warn('generateAudioAcousticCardPngDataUrl error:', err);
+      resolve('');
+    }
+  });
+}
+
 /**
  * Captures a video frame snapshot as a base64 JPEG data URL.
- * Automatically tries active DOM video elements first, then falls back to Blob/URL seek capture.
+ * Supports dynamic seekTimeSeconds so capture is not always fixed at a single timestamp.
  */
 export async function captureVideoSnapshot(
-  videoSource?: string | HTMLVideoElement | Blob | null
+  videoSource?: string | HTMLVideoElement | Blob | null,
+  seekTimeSeconds?: number
 ): Promise<string> {
   if (typeof window === 'undefined') return '';
 
@@ -44,6 +184,7 @@ export async function captureVideoSnapshot(
   }
 
   if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+    // If seek time is provided and differs significantly, try to capture at seek time
     try {
       const canvas = document.createElement('canvas');
       canvas.width = videoEl.videoWidth;
@@ -61,7 +202,7 @@ export async function captureVideoSnapshot(
     }
   }
 
-  // 2. Try Blob or URL source
+  // 2. Try Blob or URL source with dynamic seek time
   const src =
     typeof videoSource === 'string' && videoSource
       ? videoSource
@@ -111,7 +252,10 @@ export async function captureVideoSnapshot(
       };
 
       tempVideo.onloadedmetadata = () => {
-        const target = Math.min(1.0, tempVideo.duration > 0 ? tempVideo.duration * 0.25 : 0.5);
+        const dur = tempVideo.duration || 7;
+        const target = seekTimeSeconds && seekTimeSeconds > 0 && seekTimeSeconds < dur
+          ? seekTimeSeconds
+          : Math.max(1.0, Math.min(dur - 0.5, dur * (0.28 + ((dur % 4) * 0.05))));
         tempVideo.currentTime = target;
       };
 
@@ -129,7 +273,7 @@ export async function captureVideoSnapshot(
         settled = true;
         cleanup();
         resolve('');
-      }, 2000);
+      }, 2500);
     });
   }
 
@@ -491,6 +635,9 @@ function getEvaluationMetrics(data: ReportExportData) {
       if (data.videoSnapshotTime && data.videoSnapshotTime.trim()) {
         return data.videoSnapshotTime.trim();
       }
+      if (data.audioSnapshotTime && data.audioSnapshotTime.trim()) {
+        return data.audioSnapshotTime.trim();
+      }
       const now = new Date();
       const pad = (n: number) => n.toString().padStart(2, '0');
       const day = pad(now.getDate());
@@ -501,6 +648,15 @@ function getEvaluationMetrics(data: ReportExportData) {
       const seconds = pad(now.getSeconds());
       return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
     })(),
+    capturePosSeconds: (() => {
+      const dur = Math.max(2, Math.round(metrics.durationSeconds || 7));
+      if (data.captureTimeSeconds !== undefined && data.captureTimeSeconds > 0) {
+        return Math.max(1, Math.min(dur - 1, Math.round(data.captureTimeSeconds)));
+      }
+      const ratio = 0.28 + ((dur % 4) * 0.05);
+      return Math.max(1, Math.min(dur - 1, Math.round(dur * ratio) || 2));
+    })(),
+    totalDurationSeconds: Math.max(2, Math.round(metrics.durationSeconds || 7)),
   };
 }
 
@@ -508,7 +664,11 @@ function getEvaluationMetrics(data: ReportExportData) {
  * Builds the Microsoft Word document (.doc) matching the PDF visual layout and card design,
  * STRICTLY paginated into EXACTLY 3 PAGES with NO cut-in-half content.
  */
-export function buildSpeakingReportWord(data: ReportExportData, radarPngUrl?: string): string {
+export function buildSpeakingReportWord(
+  data: ReportExportData,
+  radarPngUrl?: string,
+  audioPngUrl?: string
+): string {
   const {
     studentName,
     grade,
@@ -540,7 +700,13 @@ export function buildSpeakingReportWord(data: ReportExportData, radarPngUrl?: st
     phonemes,
     priorities,
     captureTimestamp,
+    capturePosSeconds,
+    totalDurationSeconds,
   } = getEvaluationMetrics(data);
+
+  const currTimeStr = formatTimeMmSs(capturePosSeconds);
+  const totalTimeStr = formatTimeMmSs(totalDurationSeconds);
+  const progressPercent = Math.max(8, Math.min(95, Math.round((capturePosSeconds / totalDurationSeconds) * 100)));
 
   const radarImgTag = radarPngUrl
     ? `<img src="${radarPngUrl}" width="310" height="245" style="display: block; margin: 0 auto; border: none;" alt="Competency Skills Radar Chart" />`
@@ -752,7 +918,7 @@ export function buildSpeakingReportWord(data: ReportExportData, radarPngUrl?: st
       </tr>
     </table>
 
-    <!-- 4. Real-time Speaking Metrics (4 cards in 4 cols) -->
+    <!-- 4. Video or Audio Recording Snapshot -->
     ${
       isVideo && data.videoSnapshotUrl
         ? `
@@ -780,7 +946,7 @@ export function buildSpeakingReportWord(data: ReportExportData, radarPngUrl?: st
       <table cellpadding="0" cellspacing="0" style="width: 100%; background-color: #050d1a; border-radius: 4pt; padding: 3pt 8pt; margin-top: 2pt;">
         <tr>
           <td style="font-size: 7.5pt; font-family: monospace; color: #ffffff;">
-            ⏸ 0:01 / ${formatTimeMmSs(metrics.durationSeconds || 5)}
+            ⏸ ${currTimeStr} / ${totalTimeStr}
           </td>
           <td style="text-align: right; font-size: 7.5pt; color: #38bdf8;">
             🔊 HD 720p • Camera Verified
@@ -789,7 +955,20 @@ export function buildSpeakingReportWord(data: ReportExportData, radarPngUrl?: st
       </table>
     </div>
     `
-        : ''
+        : `
+    <!-- Student Audio Recording Acoustic Sync (Matching Image 1 & Image 2) -->
+    <div style="margin: 6pt 0; text-align: center;">
+      ${
+        audioPngUrl || data.audioSnapshotUrl
+          ? `<img src="${audioPngUrl || data.audioSnapshotUrl}" alt="Student Audio Recording Acoustic Sync" style="width: 440pt; max-width: 100%; height: auto; border-radius: 8pt; display: block; margin: 0 auto; border: 1.5pt solid #0284c7;" />`
+          : generateAudioAcousticCardSvg({
+              timestampStr: captureTimestamp,
+              totalDurationSeconds: totalDurationSeconds,
+              currentPositionSeconds: capturePosSeconds,
+            })
+      }
+    </div>
+    `
     }
 
     <div style="margin-top: 2pt; margin-bottom: 3pt;">
@@ -1281,7 +1460,13 @@ export function buildSpeakingReportHtml(data: ReportExportData, forPdf = false):
     phonemes,
     priorities,
     captureTimestamp,
+    capturePosSeconds,
+    totalDurationSeconds,
   } = getEvaluationMetrics(data);
+
+  const currTimeStr = formatTimeMmSs(capturePosSeconds);
+  const totalTimeStr = formatTimeMmSs(totalDurationSeconds);
+  const progressPercent = Math.max(8, Math.min(95, Math.round((capturePosSeconds / totalDurationSeconds) * 100)));
 
   const radarSvg = generateRadarChartSvg(result);
 
@@ -2191,7 +2376,7 @@ export function buildSpeakingReportHtml(data: ReportExportData, forPdf = false):
             <!-- Video Player Controls Bar Overlay (Matching Attached Student Player Screen) -->
             <div class="video-player-overlay-bar">
               <div class="video-progress-line-track">
-                <div class="video-progress-line-active" style="width: 25%;"></div>
+                <div class="video-progress-line-active" style="width: ${progressPercent}%;"></div>
               </div>
               <div class="video-player-controls-row">
                 <div class="video-player-controls-left">
@@ -2199,7 +2384,7 @@ export function buildSpeakingReportHtml(data: ReportExportData, forPdf = false):
                     <rect x="6" y="4" width="4" height="16" rx="1"></rect>
                     <rect x="14" y="4" width="4" height="16" rx="1"></rect>
                   </svg>
-                  <span class="video-player-time">0:01 / ${formatTimeMmSs(metrics.durationSeconds || 5)}</span>
+                  <span class="video-player-time">${currTimeStr} / ${totalTimeStr}</span>
                 </div>
                 <div class="video-player-controls-right">
                   <svg class="video-icon-btn" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2225,7 +2410,18 @@ export function buildSpeakingReportHtml(data: ReportExportData, forPdf = false):
         </div>
       </section>
       `
-          : ''
+          : `
+      <!-- Student Audio Recording Acoustic Sync (Matching Image 1 & Image 2) -->
+      <section class="audio-acoustic-section" style="margin-top: 5px; margin-bottom: 7px;">
+        <div class="audio-acoustic-card" style="border-radius: 12px; overflow: hidden; box-shadow: 0 4px 18px rgba(2, 132, 199, 0.15); border: 1.5px solid rgba(14, 165, 233, 0.35); background: #070e1c;">
+          ${generateAudioAcousticCardSvg({
+            timestampStr: captureTimestamp,
+            totalDurationSeconds: totalDurationSeconds,
+            currentPositionSeconds: capturePosSeconds,
+          })}
+        </div>
+      </section>
+      `
       }
 
       <!-- Real-time Metrics -->
@@ -2502,6 +2698,22 @@ export async function downloadSpeakingReportWord(data: ReportExportData): Promis
     }
   }
 
+  // Render high-res audio acoustic card PNG for Word if not video
+  let audioPng = data.audioSnapshotUrl || '';
+  if (!data.result.hasVideo && !audioPng) {
+    try {
+      const { captureTimestamp, totalDurationSeconds, capturePosSeconds } = getEvaluationMetrics(data);
+      audioPng = await generateAudioAcousticCardPngDataUrl({
+        timestampStr: captureTimestamp,
+        totalDurationSeconds,
+        currentPositionSeconds: capturePosSeconds,
+      });
+      data.audioSnapshotUrl = audioPng;
+    } catch (e) {
+      console.warn('Audio acoustic card PNG generation skipped:', e);
+    }
+  }
+
   // Render high-res radar chart PNG for Word
   let radarPng = '';
   try {
@@ -2510,7 +2722,7 @@ export async function downloadSpeakingReportWord(data: ReportExportData): Promis
     console.warn('Radar PNG generation skipped:', e);
   }
 
-  const wordContent = buildSpeakingReportWord(data, radarPng);
+  const wordContent = buildSpeakingReportWord(data, radarPng, audioPng);
 
   // UTF-8 BOM '\ufeff' ensures accented Vietnamese characters display properly in MS Word
   const blob = new Blob(['\ufeff' + wordContent], {
@@ -2558,6 +2770,13 @@ export async function downloadSpeakingReportPdf(data: ReportExportData): Promise
     } catch (e) {
       console.warn('Auto capture video snapshot for PDF error:', e);
     }
+  }
+
+  // Ensure audioSnapshotTime is set if audio recording
+  if (!data.result.hasVideo && !data.audioSnapshotTime) {
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    data.audioSnapshotTime = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
   }
 
   const { jsPDF } = await import('jspdf');
