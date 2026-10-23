@@ -99,6 +99,8 @@ export interface AssessmentResult {
   improvementPriorities?: string[];
   taskTopicEn?: string;
   taskTopicVi?: string;
+  inputMethod?: InputMethod;
+  isManuallyEdited?: boolean;
 }
 
 export interface PracticePrompt {

@@ -58,6 +58,7 @@ import { CustomVideoPlayer } from './CustomVideoPlayer';
 import { normalizeTranscribedSpeech } from '../utils/transcriptPunctuation';
 import {
   downloadSpeakingReportPdf,
+  downloadSpeakingReportWord,
   printSpeakingReport,
   captureVideoSnapshot,
   generateAudioAcousticCardPngDataUrl,
@@ -132,6 +133,8 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
   // Live Speech Recognition Transcript
   const [liveTranscript, setLiveTranscript] = useState<string>('');
   const [isListeningSpeech, setIsListeningSpeech] = useState(false);
+  const [isFinalizingSpeech, setIsFinalizingSpeech] = useState<boolean>(false);
+  const [isManuallyEdited, setIsManuallyEdited] = useState<boolean>(false);
 
   // Guided Practice Prompt collapse/expand state (defaults to collapsed for compact interface)
   const [isPromptExpanded, setIsPromptExpanded] = useState<boolean>(false);
@@ -158,6 +161,14 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
   const isListeningSpeechRef = useRef<boolean>(false);
   const accumulatedTranscriptRef = useRef<string>('');
   const sessionFinalTranscriptRef = useRef<string>('');
+  const interimTranscriptRef = useRef<string>('');
+  const lastTranscriptUpdateTimeRef = useRef<number>(0);
+  const hasNotifiedNoSpeechRef = useRef<boolean>(false);
+  const notifiedErrorsRef = useRef<Set<string>>(new Set<string>());
+  const networkErrorRetryCountRef = useRef<number>(0);
+  const shouldStopRecognitionRef = useRef<boolean>(false);
+  const stopWaitResolverRef = useRef<(() => void) | null>(null);
+  const originalRecognizedTranscriptRef = useRef<string>('');
   const restartTimeoutRef = useRef<any>(null);
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const audioEnhancementCleanupRef = useRef<(() => void) | null>(null);
@@ -300,6 +311,10 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       clearInterval(audioTimerRef.current);
       clearInterval(videoTimerRef.current);
       clearTimeout(restartTimeoutRef.current);
+      if (stopWaitResolverRef.current) {
+        stopWaitResolverRef.current();
+        stopWaitResolverRef.current = null;
+      }
       isListeningSpeechRef.current = false;
       if (recognitionRef.current) {
         try {
@@ -309,137 +324,281 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     };
   }, []);
 
-  // Web Speech API for transcript with continuous, resilient listening, zero silence timeout,
-  // and real-time capitalization + sentence punctuation formatting
-  const startSpeechRecognition = () => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn('SpeechRecognition is not supported in this browser.');
-      return;
-    }
-
-    isListeningSpeechRef.current = true;
-    accumulatedTranscriptRef.current = '';
-    sessionFinalTranscriptRef.current = '';
-    clearTimeout(restartTimeoutRef.current);
-    setIsListeningSpeech(true);
-
-    const initRecognition = () => {
-      if (!isListeningSpeechRef.current) return;
-
-      try {
-        if (recognitionRef.current) {
-          try {
-            recognitionRef.current.abort();
-          } catch (e) {}
-          recognitionRef.current = null;
+  // Helper to safely merge transcript chunks without word duplication
+  const safeCombinePieces = (...pieces: string[]): string => {
+    const valid = pieces
+      .map((p) => (p || '').trim())
+      .filter(Boolean);
+    if (valid.length === 0) return '';
+    let combined = valid[0];
+    for (let i = 1; i < valid.length; i++) {
+      const next = valid[i];
+      if (!next) continue;
+      const combinedWords = combined.split(/\s+/);
+      const nextWords = next.split(/\s+/);
+      let overlap = 0;
+      const maxCheck = Math.min(combinedWords.length, nextWords.length, 6);
+      for (let len = maxCheck; len >= 1; len--) {
+        const endSlice = combinedWords
+          .slice(-len)
+          .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
+          .join(' ');
+        const startSlice = nextWords
+          .slice(0, len)
+          .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
+          .join(' ');
+        if (endSlice && startSlice && endSlice === startSlice) {
+          overlap = len;
+          break;
         }
-
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
-        recognition.maxAlternatives = 1;
-
-        recognition.onstart = () => {
-          setIsListeningSpeech(true);
-        };
-
-        recognition.onresult = (event: any) => {
-          let interim = '';
-          let sessionFinal = '';
-
-          for (let i = 0; i < event.results.length; ++i) {
-            const item = event.results[i];
-            const transcript = item[0]?.transcript || '';
-            if (item.isFinal) {
-              sessionFinal += transcript + ' ';
-            } else {
-              interim += transcript + ' ';
-            }
-          }
-
-          sessionFinalTranscriptRef.current = sessionFinal;
-
-          // Merge past completed sessions + current session final + current active interim
-          const combinedRaw = [
-            accumulatedTranscriptRef.current,
-            sessionFinal,
-            interim,
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-          if (combinedRaw) {
-            // Real-time responsive formatting: capitalize, handle I/I'm, proper nouns, clean stutter
-            const formatted = normalizeTranscribedSpeech(combinedRaw, false);
-            setLiveTranscript(formatted);
-          }
-        };
-
-        recognition.onerror = (event: any) => {
-          // 'no-speech' or 'audio-capture' occurs during pauses; do not abort recording
-          if (event.error === 'no-speech' || event.error === 'audio-capture') {
-            return;
-          }
-        };
-
-        recognition.onend = () => {
-          // If student is still speaking/recording, commit session text and restart immediately!
-          if (isListeningSpeechRef.current) {
-            if (sessionFinalTranscriptRef.current.trim()) {
-              accumulatedTranscriptRef.current = [
-                accumulatedTranscriptRef.current,
-                sessionFinalTranscriptRef.current.trim(),
-              ]
-                .filter(Boolean)
-                .join(' ')
-                .trim();
-              sessionFinalTranscriptRef.current = '';
-            }
-
-            clearTimeout(restartTimeoutRef.current);
-            restartTimeoutRef.current = setTimeout(() => {
-              if (isListeningSpeechRef.current) {
-                initRecognition();
-              }
-            }, 60);
-          } else {
-            setIsListeningSpeech(false);
-          }
-        };
-
-        recognitionRef.current = recognition;
-        recognition.start();
-      } catch (err) {
-        console.warn('Speech recognition init error:', err);
       }
-    };
-
-    initRecognition();
+      if (overlap > 0) {
+        combined = combined + ' ' + nextWords.slice(overlap).join(' ');
+      } else {
+        combined = combined + ' ' + next;
+      }
+    }
+    return combined.replace(/\s+/g, ' ').trim();
   };
 
-  const stopSpeechRecognition = () => {
+  // Upgraded Web Speech API:
+  // 1. Ready-before-speaking with onstart sync & 1.5s fallback
+  // 2. Retains interim words across automatic restarts with zero-word duplication
+  // 3. Waits up to 1.5s on stop to capture trailing final speech
+  // 4. Smooth live display (raw capitalized, throttled <= 4/sec) + single final normalization pass
+  // 5. Explicit error notifications without spam or repeated restart loops
+  const startSpeechRecognition = (): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        onShowToast(
+          'Trình duyệt này chưa nghe được lời em. Em hãy mở app bằng Google Chrome hoặc Microsoft Edge.',
+          'error'
+        );
+        resolve(false);
+        return;
+      }
+
+      isListeningSpeechRef.current = true;
+      accumulatedTranscriptRef.current = '';
+      sessionFinalTranscriptRef.current = '';
+      interimTranscriptRef.current = '';
+      originalRecognizedTranscriptRef.current = '';
+      hasNotifiedNoSpeechRef.current = false;
+      notifiedErrorsRef.current.clear();
+      networkErrorRetryCountRef.current = 0;
+      shouldStopRecognitionRef.current = false;
+      clearTimeout(restartTimeoutRef.current);
+      setIsListeningSpeech(true);
+      setIsManuallyEdited(false);
+
+      onShowToast('⏳ Đang chuẩn bị micro…', 'info');
+
+      let resolved = false;
+      const finishResolve = (ready: boolean) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(startTimeout);
+          if (ready) {
+            onShowToast('🟢 Em bắt đầu nói nhé!', 'info');
+          }
+          resolve(ready);
+        }
+      };
+
+      // Maximum 1.5 seconds wait for onstart event before proceeding
+      const startTimeout = setTimeout(() => {
+        finishResolve(false);
+      }, 1500);
+
+      const initRecognition = () => {
+        if (!isListeningSpeechRef.current || shouldStopRecognitionRef.current) return;
+
+        try {
+          if (recognitionRef.current) {
+            try {
+              recognitionRef.current.abort();
+            } catch (e) {}
+            recognitionRef.current = null;
+          }
+
+          const recognition = new SpeechRecognition();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = 'en-US';
+          recognition.maxAlternatives = 1;
+
+          recognition.onstart = () => {
+            setIsListeningSpeech(true);
+            finishResolve(true);
+          };
+
+          recognition.onresult = (event: any) => {
+            let currentInterim = '';
+            let currentSessionFinal = '';
+
+            for (let i = 0; i < event.results.length; ++i) {
+              const item = event.results[i];
+              const transcript = item[0]?.transcript || '';
+              if (item.isFinal) {
+                currentSessionFinal += transcript + ' ';
+              } else {
+                currentInterim += transcript + ' ';
+              }
+            }
+
+            sessionFinalTranscriptRef.current = currentSessionFinal.trim();
+            interimTranscriptRef.current = currentInterim.trim();
+
+            // Throttle UI updates to at most 4 times per second (>= 250ms)
+            const now = Date.now();
+            if (now - lastTranscriptUpdateTimeRef.current >= 250) {
+              lastTranscriptUpdateTimeRef.current = now;
+              const combinedRaw = safeCombinePieces(
+                accumulatedTranscriptRef.current,
+                sessionFinalTranscriptRef.current,
+                interimTranscriptRef.current
+              );
+              if (combinedRaw) {
+                // Show raw text with capitalized first letter during live listening
+                const rawDisplay = combinedRaw.charAt(0).toUpperCase() + combinedRaw.slice(1);
+                setLiveTranscript(rawDisplay);
+              }
+            }
+          };
+
+          recognition.onerror = (event: any) => {
+            const errCode = event?.error;
+            if (errCode === 'no-speech') {
+              // Handled by 6-second silence timer; no error toast
+              return;
+            }
+
+            if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
+              shouldStopRecognitionRef.current = true;
+              if (!notifiedErrorsRef.current.has('not-allowed')) {
+                notifiedErrorsRef.current.add('not-allowed');
+                onShowToast('🎤 Em hãy cho phép dùng micro (bấm biểu tượng ổ khoá cạnh địa chỉ web).', 'error');
+              }
+              return;
+            }
+
+            if (errCode === 'audio-capture') {
+              shouldStopRecognitionRef.current = true;
+              if (!notifiedErrorsRef.current.has('audio-capture')) {
+                notifiedErrorsRef.current.add('audio-capture');
+                onShowToast('🎤 Micro đang bị ứng dụng khác dùng. Em hãy đóng Zalo, Meet… rồi ghi âm lại.', 'error');
+              }
+              return;
+            }
+
+            if (errCode === 'network') {
+              if (!notifiedErrorsRef.current.has('network')) {
+                notifiedErrorsRef.current.add('network');
+                onShowToast('📶 Mạng yếu nên máy chưa nghe được. Em kiểm tra wifi rồi ghi âm lại nhé.', 'error');
+              }
+              networkErrorRetryCountRef.current += 1;
+              if (networkErrorRetryCountRef.current > 3) {
+                shouldStopRecognitionRef.current = true;
+              }
+              return;
+            }
+          };
+
+          recognition.onend = () => {
+            if (shouldStopRecognitionRef.current) {
+              setIsListeningSpeech(false);
+              if (stopWaitResolverRef.current) {
+                stopWaitResolverRef.current();
+                stopWaitResolverRef.current = null;
+              }
+              return;
+            }
+
+            if (isListeningSpeechRef.current) {
+              // Combine both final AND last interim into accumulatedTranscriptRef before restarting
+              accumulatedTranscriptRef.current = safeCombinePieces(
+                accumulatedTranscriptRef.current,
+                sessionFinalTranscriptRef.current,
+                interimTranscriptRef.current
+              );
+              sessionFinalTranscriptRef.current = '';
+              interimTranscriptRef.current = '';
+
+              // Restart immediately (without waiting)
+              initRecognition();
+            } else {
+              setIsListeningSpeech(false);
+              if (stopWaitResolverRef.current) {
+                stopWaitResolverRef.current();
+                stopWaitResolverRef.current = null;
+              }
+            }
+          };
+
+          recognitionRef.current = recognition;
+          recognition.start();
+        } catch (err) {
+          console.warn('Speech recognition init error:', err);
+          finishResolve(false);
+        }
+      };
+
+      initRecognition();
+    });
+  };
+
+  const stopSpeechRecognition = async (): Promise<string> => {
     isListeningSpeechRef.current = false;
     clearTimeout(restartTimeoutRef.current);
+    setIsFinalizingSpeech(true);
 
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
-      } catch (e) {}
+      } catch (e) {
+        try {
+          recognitionRef.current.abort();
+        } catch (err) {}
+      }
+
+      // Wait for recognition.onend (up to 1.5 seconds) to receive any trailing final audio packet
+      await new Promise<void>((resolve) => {
+        let resolved = false;
+        const done = () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(stopTimeout);
+            stopWaitResolverRef.current = null;
+            resolve();
+          }
+        };
+        stopWaitResolverRef.current = done;
+        const stopTimeout = setTimeout(done, 1500);
+      });
     }
 
-    // Allow browser final audio packet to flush, then execute full final punctuation pass
-    setTimeout(() => {
-      setLiveTranscript((prev) => {
-        if (!prev || !prev.trim()) return prev;
-        return normalizeTranscribedSpeech(prev, true);
-      });
-      setIsListeningSpeech(false);
-    }, 200);
+    // Flush any latest text
+    const combinedRaw = safeCombinePieces(
+      accumulatedTranscriptRef.current,
+      sessionFinalTranscriptRef.current,
+      interimTranscriptRef.current
+    );
+
+    let finalNormalized = '';
+    if (combinedRaw.trim()) {
+      // Execute full punctuation, sentence casing, and clean formatting ONCE after stopping
+      finalNormalized = normalizeTranscribedSpeech(combinedRaw, true);
+      setLiveTranscript(finalNormalized);
+    }
+
+    originalRecognizedTranscriptRef.current = finalNormalized;
+    setIsManuallyEdited(false);
+    setIsListeningSpeech(false);
+    setIsFinalizingSpeech(false);
+
+    return finalNormalized;
   };
 
   // Reset analysis when inputs change
@@ -516,6 +675,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     if (!isAudioRecording) {
       resetAnalysis();
       setLiveTranscript('');
+      hasNotifiedNoSpeechRef.current = false;
+      originalRecognizedTranscriptRef.current = '';
+      setIsManuallyEdited(false);
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -543,12 +705,14 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
           const url = URL.createObjectURL(audioBlob);
           setAudioBlobUrl(url);
           stream.getTracks().forEach((t) => t.stop());
-          stopSpeechRecognition();
           if (audioEnhancementCleanupRef.current) {
             audioEnhancementCleanupRef.current();
             audioEnhancementCleanupRef.current = null;
           }
         };
+
+        // 1. Ready-before-speaking: start recognition first, wait up to 1.5s for onstart
+        await startSpeechRecognition();
 
         mediaRecorder.start();
         audioMediaRecorderRef.current = mediaRecorder;
@@ -556,10 +720,25 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
 
         setAudioSeconds(0);
         audioTimerRef.current = setInterval(() => {
-          setAudioSeconds((prev) => prev + 1);
+          setAudioSeconds((prev) => {
+            const next = prev + 1;
+            // 5 & 8. Check 6-second silence notification
+            if (next === 6 && !hasNotifiedNoSpeechRef.current) {
+              const currentText = (
+                accumulatedTranscriptRef.current + ' ' +
+                sessionFinalTranscriptRef.current + ' ' +
+                interimTranscriptRef.current
+              ).trim();
+              const words = currentText.split(/\s+/).filter((w) => /[a-zA-Z]/.test(w));
+              if (words.length === 0) {
+                hasNotifiedNoSpeechRef.current = true;
+                onShowToast('Máy chưa nghe thấy em. Em nói to, rõ, gần micro hơn nhé.', 'info');
+              }
+            }
+            return next;
+          });
         }, 1000);
 
-        startSpeechRecognition();
         onShowToast('🎙️ Bắt đầu ghi âm bài nói (Âm thanh chuẩn Studio)...', 'info');
       } catch (err) {
         onShowToast('⚠️ Không thể truy cập Microphone!', 'error');
@@ -570,7 +749,8 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       }
       setIsAudioRecording(false);
       clearInterval(audioTimerRef.current);
-      stopSpeechRecognition();
+      // 3. Prevent losing trailing words: await stopSpeechRecognition to receive last packet
+      await stopSpeechRecognition();
       onShowToast('✅ Đã ghi âm xong!', 'success');
     }
   };
@@ -584,6 +764,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     setAudioSeconds(0);
     accumulatedTranscriptRef.current = '';
     sessionFinalTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
+    originalRecognizedTranscriptRef.current = '';
+    setIsManuallyEdited(false);
     setLiveTranscript('');
   };
 
@@ -592,6 +775,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     if (!isVideoRecording) {
       resetAnalysis();
       setLiveTranscript('');
+      hasNotifiedNoSpeechRef.current = false;
+      originalRecognizedTranscriptRef.current = '';
+      setIsManuallyEdited(false);
       try {
         if (!videoStreamRef.current) {
           await startCamera();
@@ -717,12 +903,14 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
           const url = URL.createObjectURL(videoBlob);
           setVideoBlobUrl(url);
           stopCamera();
-          stopSpeechRecognition();
           if (audioEnhancementCleanupRef.current) {
             audioEnhancementCleanupRef.current();
             audioEnhancementCleanupRef.current = null;
           }
         };
+
+        // 1. Ready-before-speaking: start recognition first, wait up to 1.5s for onstart
+        await startSpeechRecognition();
 
         mediaRecorder.start();
         videoMediaRecorderRef.current = mediaRecorder;
@@ -730,10 +918,25 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
 
         setVideoSeconds(0);
         videoTimerRef.current = setInterval(() => {
-          setVideoSeconds((prev) => prev + 1);
+          setVideoSeconds((prev) => {
+            const next = prev + 1;
+            // 5 & 8. Check 6-second silence notification for video
+            if (next === 6 && !hasNotifiedNoSpeechRef.current) {
+              const currentText = (
+                accumulatedTranscriptRef.current + ' ' +
+                sessionFinalTranscriptRef.current + ' ' +
+                interimTranscriptRef.current
+              ).trim();
+              const words = currentText.split(/\s+/).filter((w) => /[a-zA-Z]/.test(w));
+              if (words.length === 0) {
+                hasNotifiedNoSpeechRef.current = true;
+                onShowToast('Máy chưa nghe thấy em. Em nói to, rõ, gần micro hơn nhé.', 'info');
+              }
+            }
+            return next;
+          });
         }, 1000);
 
-        startSpeechRecognition();
         onShowToast('🎥 Bắt đầu ghi hình bài nói (Âm thanh lọc ồn, to & rõ hơn)...', 'info');
       } catch (err) {
         onShowToast('⚠️ Lỗi quay video: ' + (err as any).message, 'error');
@@ -744,7 +947,8 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       }
       setIsVideoRecording(false);
       clearInterval(videoTimerRef.current);
-      stopSpeechRecognition();
+      // 3. Prevent losing trailing words: await stopSpeechRecognition to receive last packet
+      await stopSpeechRecognition();
       onShowToast('✅ Đã hoàn thành ghi hình video!', 'success');
     }
   };
@@ -758,6 +962,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     setVideoSeconds(0);
     accumulatedTranscriptRef.current = '';
     sessionFinalTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
+    originalRecognizedTranscriptRef.current = '';
+    setIsManuallyEdited(false);
     setLiveTranscript('');
     startCamera();
   };
@@ -848,6 +1055,18 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       }
     }
 
+    const spokenText = (liveTranscript || '').trim();
+    const spokenWords = spokenText.split(/\s+/).filter((w) => /[a-zA-Z]/.test(w));
+    if (spokenWords.length < 3) {
+      if (inputMethod === 'upload') {
+        onShowToast('⌨️ Em hãy gõ lại lời em đã nói trong file vào ô bên trên rồi bấm chấm nhé!', 'error');
+      } else {
+        onShowToast('🎤 Máy chưa nghe được lời em nói. Em hãy nói lại nhé!', 'error');
+      }
+      return;
+    }
+    const actualTranscript = normalizeTranscribedSpeech(spokenText);
+
     setIsAnalyzing(true);
 
     try {
@@ -880,24 +1099,21 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         return uploadedFile?.type.startsWith('video') ? 12 : 8;
       })();
 
-      // Use actual student transcript (normalized with proper capitals & terminal periods)
-      // or generate contextual transcript from sample if speech API didn't fire
-      const actualTranscript =
-        liveTranscript && liveTranscript.trim().length > 0
-          ? normalizeTranscribedSpeech(liveTranscript.trim())
-          : currentPrompt.sampleContent.replace(/\n/g, ' ').substring(0, 160);
-
-      const finalResult = evaluateSpeakingRubric({
-        schoolLevel,
-        taskType,
-        transcript: actualTranscript,
-        durationSeconds: activeDuration,
-        hasVideo: hasVideoContent,
-        scoringScale,
-        sampleContent: currentPrompt.sampleContent,
-        taskTitleEn: selectedTaskObj.en,
-        taskTitleVi: selectedTaskObj.vi,
-      });
+      const finalResult = {
+        ...evaluateSpeakingRubric({
+          schoolLevel,
+          taskType,
+          transcript: actualTranscript,
+          durationSeconds: activeDuration,
+          hasVideo: hasVideoContent,
+          scoringScale,
+          sampleContent: currentPrompt.sampleContent,
+          taskTitleEn: selectedTaskObj.en,
+          taskTitleVi: selectedTaskObj.vi,
+        }),
+        inputMethod,
+        isManuallyEdited: inputMethod !== 'upload' && isManuallyEdited,
+      };
 
       setResult(finalResult);
       setIsCurrentMediaAnalyzed(true);
@@ -1011,6 +1227,8 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         taskTypeVi: selectedTaskObj.vi,
         scale: scoringScale,
         result: currentResult,
+        inputMethod,
+        isManuallyEdited: currentResult.isManuallyEdited ?? (inputMethod !== 'upload' && isManuallyEdited),
         videoSnapshotUrl: videoSnapUrl || undefined,
         videoSnapshotTime: videoSnapTime || timestampFormatted,
         audioSnapshotUrl: audioSnapUrl || undefined,
@@ -1018,7 +1236,10 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         captureTimeSeconds,
       };
 
-      if (format === 'pdf') {
+      if (format === 'word') {
+        const fileName = await downloadSpeakingReportWord(exportData);
+        onShowToast(`📝 Đã xuất phiếu kết quả Word: ${fileName}`, 'success');
+      } else if (format === 'pdf') {
         setIsExportingPdf(true);
         onShowToast('⏳ Đang tạo file PDF 2 trang chất lượng cao...', 'info');
         const fileName = await downloadSpeakingReportPdf(exportData);
@@ -1775,18 +1996,29 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
           )}
 
           {/* Real-time transcribed text with high-precision punctuation & live recording feedback */}
-          {(liveTranscript || isListeningSpeech || isAudioRecording || isVideoRecording) && (
+          {(liveTranscript ||
+            isListeningSpeech ||
+            isAudioRecording ||
+            isVideoRecording ||
+            (inputMethod === 'upload' && Boolean(uploadedFile)) ||
+            ((audioBlobUrl || videoBlobUrl) && !liveTranscript)) && (
             <div className="w-full max-w-xl mt-3 p-3.5 bg-[#0d162d] border border-cyan-500/40 rounded-xl text-xs text-slate-200 shadow-lg">
               <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                 <div className="flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
                   <span className="text-cyan-300 font-bold text-xs">
-                    Lời nói nhận diện từ micro (Transcribed Speech):
+                    {inputMethod === 'upload'
+                      ? 'Lời em đã nói trong file (em gõ lại):'
+                      : 'Lời nói nhận diện từ micro (Transcribed Speech):'}
                   </span>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {isListeningSpeech || isAudioRecording || isVideoRecording ? (
+                  {inputMethod === 'upload' ? (
+                    <span className="text-[10px] text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/40 font-semibold flex items-center gap-1">
+                      ⌨️ Gõ lại
+                    </span>
+                  ) : isListeningSpeech || isAudioRecording || isVideoRecording ? (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-950/90 text-rose-300 border border-rose-500/50 text-[10.5px] font-bold animate-pulse">
                       <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
                       Đang nhận diện trực tiếp...
@@ -1803,10 +2035,23 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
               <div className="relative">
                 <textarea
                   value={liveTranscript}
-                  onChange={(e) => setLiveTranscript(e.target.value)}
+                  onChange={(e) => {
+                    const newVal = e.target.value;
+                    setLiveTranscript(newVal);
+                    if (inputMethod !== 'upload') {
+                      const orig = (originalRecognizedTranscriptRef.current || '').trim();
+                      if (newVal.trim() !== orig) {
+                        setIsManuallyEdited(true);
+                      }
+                    }
+                  }}
                   placeholder={
-                    isListeningSpeech || isAudioRecording || isVideoRecording
+                    inputMethod === 'upload'
+                      ? 'Em hãy gõ lại đúng những câu tiếng Anh em đã nói trong file. Gõ đúng như em nói, kể cả chỗ sai.'
+                      : isListeningSpeech || isAudioRecording || isVideoRecording
                       ? 'Đang lắng nghe trực tiếp từ micro... Nói đến đâu văn bản hiển thị tức thì đến đó với đầy đủ dấu câu, dấu chấm và viết hoa!'
+                      : (audioBlobUrl || videoBlobUrl) && !liveTranscript.trim()
+                      ? 'Máy chưa nghe được lời em nói. Hãy ghi âm lại, hoặc gõ lại đúng những câu em đã nói.'
                       : 'Lời nói nhận diện từ micro sẽ hiển thị ở đây...'
                   }
                   rows={3}
@@ -1814,6 +2059,12 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
                   title="Em có thể chỉnh sửa lại từ nếu mic nhận diện chưa khớp"
                 />
               </div>
+
+              {inputMethod === 'upload' && (
+                <p className="mt-1.5 text-[11px] text-slate-400">
+                  App chưa tự nghe được lời trong file tải lên. Điểm được chấm theo lời em gõ.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -1822,9 +2073,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         <button
           id="btnAnalyzeStudent"
           onClick={handleAnalyzeAndGrade}
-          disabled={isAnalyzing}
+          disabled={isAnalyzing || isFinalizingSpeech}
           className={`w-full font-black py-3 rounded-xl text-[14px] transition-all cursor-pointer shadow-md flex items-center justify-center gap-2 ${
-            isAnalyzing
+            isAnalyzing || isFinalizingSpeech
               ? 'bg-[#142343] border border-cyan-500/40 text-cyan-300 cursor-not-allowed'
               : 'bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 hover:from-cyan-400 hover:via-blue-400 hover:to-indigo-500 text-slate-950 shadow-[0_0_25px_rgba(6,182,212,0.6)] active:scale-[0.99]'
           }`}
@@ -1833,6 +2084,11 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
             <>
               <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
               <span>Đang chấm điểm & phân tích giọng nói (AI Evaluation in progress)...</span>
+            </>
+          ) : isFinalizingSpeech ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+              <span>⏳ Đang hoàn tất nhận diện…</span>
             </>
           ) : (
             <>

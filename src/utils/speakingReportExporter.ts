@@ -14,6 +14,8 @@ export interface ReportExportData {
   audioSnapshotUrl?: string;
   audioSnapshotTime?: string;
   captureTimeSeconds?: number;
+  inputMethod?: string;
+  isManuallyEdited?: boolean;
 }
 
 /**
@@ -1370,6 +1372,13 @@ export function buildSpeakingReportWord(
       <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 5pt; padding: 6pt 9pt; font-size: 8.5pt; font-style: italic; color: #334155; line-height: 1.45;">
         "${result.transcript || 'Chưa có bản ghi lời thoại.'}"
       </div>
+      ${
+        data.inputMethod === 'upload' || (result as any).inputMethod === 'upload'
+          ? '<div style="font-size: 7.5pt; color: #64748b; margin-top: 3pt; font-style: italic;">Nguồn lời nói: Gõ lại từ file tải lên.</div>'
+          : (data.isManuallyEdited || (result as any).isManuallyEdited)
+          ? '<div style="font-size: 7.5pt; color: #64748b; margin-top: 3pt; font-style: italic;">Lời nói có chỉnh sửa tay sau khi máy nhận diện.</div>'
+          : ''
+      }
     </div>
 
     <!-- Official Sign-off & Certification Footer (2 Columns: 50% / 50%) -->
@@ -2641,6 +2650,13 @@ export function buildSpeakingReportHtml(data: ReportExportData, forPdf = false):
         <div class="transcript-box">
           "${result.transcript || 'Chưa có bản ghi lời thoại.'}"
         </div>
+        ${
+          data.inputMethod === 'upload' || (result as any).inputMethod === 'upload'
+            ? '<div style="font-size: 8.5px; color: #64748b; margin-top: 3px; font-style: italic;">Nguồn lời nói: Gõ lại từ file tải lên.</div>'
+            : (data.isManuallyEdited || (result as any).isManuallyEdited)
+            ? '<div style="font-size: 8.5px; color: #64748b; margin-top: 3px; font-style: italic;">Lời nói có chỉnh sửa tay sau khi máy nhận diện.</div>'
+            : ''
+        }
       </section>
 
       <!-- Section 4: Sign-off Footer -->
