@@ -72,6 +72,15 @@ interface StudentAssessmentProps {
   classNameVal: string;
 }
 
+const isMobile =
+  typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const isInAppBrowser =
+  typeof navigator !== 'undefined' &&
+  /Zalo|FBAN|FBAV|Messenger|Instagram/i.test(navigator.userAgent);
+const hasSpeechRecognition =
+  typeof window !== 'undefined' &&
+  Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+
 export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
   onShowToast,
   studentName,
@@ -135,6 +144,20 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
   const [isListeningSpeech, setIsListeningSpeech] = useState(false);
   const [isFinalizingSpeech, setIsFinalizingSpeech] = useState<boolean>(false);
   const [isManuallyEdited, setIsManuallyEdited] = useState<boolean>(false);
+  const [showMobileSpeechReminder, setShowMobileSpeechReminder] = useState<boolean>(false);
+  const [isMobileReEntered, setIsMobileReEntered] = useState<boolean>(false);
+  const [isMobileDictating, setIsMobileDictating] = useState<boolean>(false);
+  const [isMobileDictated, setIsMobileDictated] = useState<boolean>(false);
+  const transcriptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Mobile Dictation Refs
+  const mobileDictationRecognitionRef = useRef<any>(null);
+  const mobilePrefixRef = useRef<string>('');
+  const mobileLatestRawRef = useRef<string>('');
+  const mobileSilenceTimerRef = useRef<any>(null);
+  const mobileNoSpeechTimerRef = useRef<any>(null);
+  const mobileHeardSpeechRef = useRef<boolean>(false);
+  const isMobileDictatingRef = useRef<boolean>(false);
 
   // Guided Practice Prompt collapse/expand state (defaults to collapsed for compact interface)
   const [isPromptExpanded, setIsPromptExpanded] = useState<boolean>(false);
@@ -321,6 +344,15 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
           recognitionRef.current.abort();
         } catch (e) {}
       }
+      isMobileDictatingRef.current = false;
+      if (mobileDictationRecognitionRef.current) {
+        try {
+          mobileDictationRecognitionRef.current.abort();
+        } catch (e) {}
+        mobileDictationRecognitionRef.current = null;
+      }
+      if (mobileSilenceTimerRef.current) clearTimeout(mobileSilenceTimerRef.current);
+      if (mobileNoSpeechTimerRef.current) clearTimeout(mobileNoSpeechTimerRef.current);
     };
   }, []);
 
@@ -392,6 +424,8 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       clearTimeout(restartTimeoutRef.current);
       setIsListeningSpeech(true);
       setIsManuallyEdited(false);
+      setShowMobileSpeechReminder(false);
+      setIsMobileReEntered(false);
 
       onShowToast('⏳ Đang chuẩn bị micro…', 'info');
 
@@ -601,6 +635,132 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     return finalNormalized;
   };
 
+  // Mobile Dictation: Read again on phones without touching MediaRecorder or deleting existing recording
+  const startMobileDictation = () => {
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    if (mobileDictationRecognitionRef.current) {
+      try {
+        mobileDictationRecognitionRef.current.abort();
+      } catch (e) {}
+      mobileDictationRecognitionRef.current = null;
+    }
+
+    if (mobileSilenceTimerRef.current) clearTimeout(mobileSilenceTimerRef.current);
+    if (mobileNoSpeechTimerRef.current) clearTimeout(mobileNoSpeechTimerRef.current);
+
+    mobileHeardSpeechRef.current = false;
+    mobilePrefixRef.current = (liveTranscript || '').trim();
+    mobileLatestRawRef.current = mobilePrefixRef.current;
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    mobileDictationRecognitionRef.current = recognition;
+    isMobileDictatingRef.current = true;
+    setIsMobileDictating(true);
+
+    const resetSilenceTimer = () => {
+      if (mobileSilenceTimerRef.current) {
+        clearTimeout(mobileSilenceTimerRef.current);
+      }
+      mobileSilenceTimerRef.current = setTimeout(() => {
+        if (isMobileDictatingRef.current) {
+          stopMobileDictation();
+        }
+      }, 3000);
+    };
+
+    mobileNoSpeechTimerRef.current = setTimeout(() => {
+      if (isMobileDictatingRef.current && !mobileHeardSpeechRef.current) {
+        onShowToast('🎤 Máy chưa nghe thấy tiếng, em lại gần micro và đọc lại nhé!', 'info');
+        stopMobileDictation();
+      }
+    }, 6000);
+
+    recognition.onresult = (event: any) => {
+      mobileHeardSpeechRef.current = true;
+      if (mobileNoSpeechTimerRef.current) {
+        clearTimeout(mobileNoSpeechTimerRef.current);
+        mobileNoSpeechTimerRef.current = null;
+      }
+
+      let best = '';
+      for (let i = 0; i < event.results.length; ++i) {
+        const t = (event.results[i][0]?.transcript || '').trim();
+        if (t.length >= best.length) best = t;
+      }
+      best = best.replace(/\b(\w+)\s+\1\b/gi, '$1');
+      const prefix = mobilePrefixRef.current ? mobilePrefixRef.current + ' ' : '';
+      const combined = (prefix + best).trim();
+      mobileLatestRawRef.current = combined;
+      setLiveTranscript(combined ? combined.charAt(0).toUpperCase() + combined.slice(1) : '');
+
+      // Reset timer im lặng 3 giây
+      resetSilenceTimer();
+    };
+
+    recognition.onerror = (event: any) => {
+      const err = event?.error;
+      if (err === 'not-allowed' || err === 'service-not-allowed') {
+        onShowToast('🎤 Em hãy cho phép micro để máy nghe em đọc.', 'error');
+      } else if (err === 'network') {
+        onShowToast('📶 Lỗi mạng, em thử lại nhé!', 'error');
+      }
+    };
+
+    recognition.onend = () => {
+      if (isMobileDictatingRef.current) {
+        stopMobileDictation();
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch (e) {
+      console.warn('Cannot start mobile speech recognition:', e);
+      setIsMobileDictating(false);
+      isMobileDictatingRef.current = false;
+    }
+  };
+
+  const stopMobileDictation = () => {
+    isMobileDictatingRef.current = false;
+    setIsMobileDictating(false);
+
+    if (mobileSilenceTimerRef.current) {
+      clearTimeout(mobileSilenceTimerRef.current);
+      mobileSilenceTimerRef.current = null;
+    }
+    if (mobileNoSpeechTimerRef.current) {
+      clearTimeout(mobileNoSpeechTimerRef.current);
+      mobileNoSpeechTimerRef.current = null;
+    }
+
+    if (mobileDictationRecognitionRef.current) {
+      try {
+        mobileDictationRecognitionRef.current.stop();
+      } catch (e) {}
+      mobileDictationRecognitionRef.current = null;
+    }
+
+    const raw = (mobileLatestRawRef.current || liveTranscript || '').trim();
+    if (raw) {
+      const normalized = normalizeTranscribedSpeech(raw, true);
+      setLiveTranscript(normalized);
+      originalRecognizedTranscriptRef.current = normalized;
+      setIsMobileDictated(true);
+      setIsMobileReEntered(false);
+      setIsManuallyEdited(false);
+      setShowMobileSpeechReminder(false);
+    }
+  };
+
   // Reset analysis when inputs change
   const resetAnalysis = () => {
     setIsCurrentMediaAnalyzed(false);
@@ -610,6 +770,7 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
   // Switch input method
   const handleSwitchInputMethod = (method: InputMethod) => {
     resetAnalysis();
+    setShowMobileSpeechReminder(false);
     if (method !== 'video') {
       stopCamera();
     }
@@ -675,6 +836,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     if (!isAudioRecording) {
       resetAnalysis();
       setLiveTranscript('');
+      setShowMobileSpeechReminder(false);
+      setIsMobileReEntered(false);
+      setIsMobileDictated(false);
       hasNotifiedNoSpeechRef.current = false;
       originalRecognizedTranscriptRef.current = '';
       setIsManuallyEdited(false);
@@ -750,13 +914,30 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       setIsAudioRecording(false);
       clearInterval(audioTimerRef.current);
       // 3. Prevent losing trailing words: await stopSpeechRecognition to receive last packet
-      await stopSpeechRecognition();
-      onShowToast('✅ Đã ghi âm xong!', 'success');
+      const finalRecognized = await stopSpeechRecognition();
+
+      const hasWords = Boolean((finalRecognized || liveTranscript).trim());
+      if (!hasWords && isMobile) {
+        setShowMobileSpeechReminder(true);
+        if (!hasSpeechRecognition) {
+          setTimeout(() => {
+            transcriptTextareaRef.current?.focus();
+          }, 150);
+        }
+      } else if (!hasWords) {
+        onShowToast('🎤 Máy chưa nghe được lời em nói. Em hãy nói lại nhé!', 'info');
+      } else {
+        setShowMobileSpeechReminder(false);
+        onShowToast('✅ Đã ghi âm xong!', 'success');
+      }
     }
   };
 
   const discardAudioRecording = () => {
     resetAnalysis();
+    if (isMobileDictatingRef.current) {
+      stopMobileDictation();
+    }
     setIsAudioMenuOpen(false);
     audioBlobRef.current = null;
     setAudioBlobUrl(null);
@@ -767,6 +948,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     interimTranscriptRef.current = '';
     originalRecognizedTranscriptRef.current = '';
     setIsManuallyEdited(false);
+    setShowMobileSpeechReminder(false);
+    setIsMobileReEntered(false);
+    setIsMobileDictated(false);
     setLiveTranscript('');
   };
 
@@ -775,6 +959,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     if (!isVideoRecording) {
       resetAnalysis();
       setLiveTranscript('');
+      setShowMobileSpeechReminder(false);
+      setIsMobileReEntered(false);
+      setIsMobileDictated(false);
       hasNotifiedNoSpeechRef.current = false;
       originalRecognizedTranscriptRef.current = '';
       setIsManuallyEdited(false);
@@ -948,13 +1135,30 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
       setIsVideoRecording(false);
       clearInterval(videoTimerRef.current);
       // 3. Prevent losing trailing words: await stopSpeechRecognition to receive last packet
-      await stopSpeechRecognition();
-      onShowToast('✅ Đã hoàn thành ghi hình video!', 'success');
+      const finalRecognized = await stopSpeechRecognition();
+
+      const hasWords = Boolean((finalRecognized || liveTranscript).trim());
+      if (!hasWords && isMobile) {
+        setShowMobileSpeechReminder(true);
+        if (!hasSpeechRecognition) {
+          setTimeout(() => {
+            transcriptTextareaRef.current?.focus();
+          }, 150);
+        }
+      } else if (!hasWords) {
+        onShowToast('🎤 Máy chưa nghe được lời em nói. Em hãy nói lại nhé!', 'info');
+      } else {
+        setShowMobileSpeechReminder(false);
+        onShowToast('✅ Đã hoàn thành ghi hình video!', 'success');
+      }
     }
   };
 
   const discardVideoRecording = () => {
     resetAnalysis();
+    if (isMobileDictatingRef.current) {
+      stopMobileDictation();
+    }
     setIsVideoMenuOpen(false);
     videoBlobRef.current = null;
     setVideoBlobUrl(null);
@@ -965,6 +1169,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
     interimTranscriptRef.current = '';
     originalRecognizedTranscriptRef.current = '';
     setIsManuallyEdited(false);
+    setShowMobileSpeechReminder(false);
+    setIsMobileReEntered(false);
+    setIsMobileDictated(false);
     setLiveTranscript('');
     startCamera();
   };
@@ -1099,6 +1306,13 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         return uploadedFile?.type.startsWith('video') ? 12 : 8;
       })();
 
+      const isMobileEntered =
+        !isMobileDictated &&
+        inputMethod !== 'upload' &&
+        isMobile &&
+        !originalRecognizedTranscriptRef.current.trim() &&
+        actualTranscript.trim().length > 0;
+
       const finalResult = {
         ...evaluateSpeakingRubric({
           schoolLevel,
@@ -1112,7 +1326,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
           taskTitleVi: selectedTaskObj.vi,
         }),
         inputMethod,
-        isManuallyEdited: inputMethod !== 'upload' && isManuallyEdited,
+        isManuallyEdited: inputMethod !== 'upload' && !isMobileEntered && !isMobileDictated && isManuallyEdited,
+        isMobileReEntered: isMobileEntered,
+        isMobileDictated: Boolean(isMobileDictated),
       };
 
       setResult(finalResult);
@@ -1219,6 +1435,13 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         }
       }
 
+      const isMobileDictatedVal =
+        Boolean(currentResult.isMobileDictated) || Boolean(isMobileDictated);
+      const isMobileEntered =
+        !isMobileDictatedVal &&
+        (Boolean(currentResult.isMobileReEntered) ||
+          (inputMethod !== 'upload' && isMobile && !originalRecognizedTranscriptRef.current.trim()));
+
       const exportData = {
         studentName,
         grade,
@@ -1228,7 +1451,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
         scale: scoringScale,
         result: currentResult,
         inputMethod,
-        isManuallyEdited: currentResult.isManuallyEdited ?? (inputMethod !== 'upload' && isManuallyEdited),
+        isManuallyEdited: !isMobileEntered && !isMobileDictatedVal && (currentResult.isManuallyEdited ?? (inputMethod !== 'upload' && isManuallyEdited)),
+        isMobileReEntered: isMobileEntered,
+        isMobileDictated: isMobileDictatedVal,
         videoSnapshotUrl: videoSnapUrl || undefined,
         videoSnapshotTime: videoSnapTime || timestampFormatted,
         audioSnapshotUrl: audioSnapUrl || undefined,
@@ -1260,6 +1485,11 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
 
   return (
     <div id="student-view-wrapper" className="space-y-4">
+      {isInAppBrowser && (
+        <div className="max-w-5xl mx-auto w-full bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs sm:text-sm font-semibold px-4 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center shadow-md">
+          <span>Để ghi âm tốt nhất, em bấm ⋮ → Mở bằng Chrome.</span>
+        </div>
+      )}
       <div className="max-w-5xl mx-auto w-full bg-[#0b1122]/95 backdrop-blur-xl rounded-2xl p-5 sm:p-7 shadow-[0_0_50px_rgba(6,182,212,0.1)] border border-cyan-500/25 text-slate-100 relative overflow-hidden">
         {/* Top glowing cyber accent line */}
         <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_12px_rgba(6,182,212,0.8)]" />
@@ -2032,8 +2262,40 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
                 </div>
               </div>
 
+              {showMobileSpeechReminder && (
+                <div className="mb-2.5 p-3 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs leading-relaxed font-medium">
+                  {hasSpeechRecognition
+                    ? '📱 Bài ghi âm của em đã được lưu. Trên điện thoại, em bấm nút bên dưới rồi ĐỌC LẠI câu em vừa nói — chữ sẽ hiện ngay trong khung.'
+                    : '📱 Trên điện thoại, máy chưa tự nghe được lời trong lúc ghi âm. Bài ghi âm của em vẫn được lưu. Em chạm vào ô bên dưới, bấm nút 🎤 trên bàn phím và đọc lại đúng câu em vừa nói (hoặc gõ lại), rồi bấm chấm điểm.'}
+                </div>
+              )}
+
+              {isMobile && hasSpeechRecognition && inputMethod !== 'upload' && (audioBlobUrl || videoBlobUrl) && !isAudioRecording && !isVideoRecording && (showMobileSpeechReminder || isMobileDictating || isMobileDictated || !liveTranscript.trim()) && (
+                <button
+                  type="button"
+                  onClick={isMobileDictating ? stopMobileDictation : startMobileDictation}
+                  className={`w-full mb-2.5 h-[52px] rounded-xl font-bold text-[13.5px] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md ${
+                    isMobileDictating
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white border border-rose-400 animate-pulse'
+                      : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white border border-cyan-400/50 shadow-[0_0_15px_rgba(6,182,212,0.4)] active:scale-[0.99]'
+                  }`}
+                >
+                  {isMobileDictating ? (
+                    <>
+                      <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
+                      <span>⏹ Đang nghe… bấm để dừng</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>🎤 Bấm để máy nghe lời em</span>
+                    </>
+                  )}
+                </button>
+              )}
+
               <div className="relative">
                 <textarea
+                  ref={transcriptTextareaRef}
                   value={liveTranscript}
                   onChange={(e) => {
                     const newVal = e.target.value;
@@ -2042,6 +2304,9 @@ export const StudentAssessment: React.FC<StudentAssessmentProps> = ({
                       const orig = (originalRecognizedTranscriptRef.current || '').trim();
                       if (newVal.trim() !== orig) {
                         setIsManuallyEdited(true);
+                        if (isMobile && !orig && !isMobileDictated) {
+                          setIsMobileReEntered(true);
+                        }
                       }
                     }
                   }}

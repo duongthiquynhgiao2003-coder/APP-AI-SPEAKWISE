@@ -101,6 +101,8 @@ export interface AssessmentResult {
   taskTopicVi?: string;
   inputMethod?: InputMethod;
   isManuallyEdited?: boolean;
+  isMobileReEntered?: boolean;
+  isMobileDictated?: boolean;
 }
 
 export interface PracticePrompt {

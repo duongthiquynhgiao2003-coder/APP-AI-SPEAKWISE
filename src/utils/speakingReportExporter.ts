@@ -16,6 +16,8 @@ export interface ReportExportData {
   captureTimeSeconds?: number;
   inputMethod?: string;
   isManuallyEdited?: boolean;
+  isMobileReEntered?: boolean;
+  isMobileDictated?: boolean;
 }
 
 /**
@@ -1375,6 +1377,10 @@ export function buildSpeakingReportWord(
       ${
         data.inputMethod === 'upload' || (result as any).inputMethod === 'upload'
           ? '<div style="font-size: 7.5pt; color: #64748b; margin-top: 3pt; font-style: italic;">Nguồn lời nói: Gõ lại từ file tải lên.</div>'
+          : data.isMobileDictated || (result as any).isMobileDictated
+          ? '<div style="font-size: 7.5pt; color: #64748b; margin-top: 3pt; font-style: italic;">Nguồn lời nói: máy nghe học sinh đọc lại trên điện thoại sau khi ghi âm.</div>'
+          : data.isMobileReEntered || (result as any).isMobileReEntered
+          ? '<div style="font-size: 7.5pt; color: #64748b; margin-top: 3pt; font-style: italic;">Nguồn lời nói: học sinh nhập lại trên điện thoại sau khi ghi âm.</div>'
           : (data.isManuallyEdited || (result as any).isManuallyEdited)
           ? '<div style="font-size: 7.5pt; color: #64748b; margin-top: 3pt; font-style: italic;">Lời nói có chỉnh sửa tay sau khi máy nhận diện.</div>'
           : ''
@@ -2653,6 +2659,10 @@ export function buildSpeakingReportHtml(data: ReportExportData, forPdf = false):
         ${
           data.inputMethod === 'upload' || (result as any).inputMethod === 'upload'
             ? '<div style="font-size: 8.5px; color: #64748b; margin-top: 3px; font-style: italic;">Nguồn lời nói: Gõ lại từ file tải lên.</div>'
+            : data.isMobileDictated || (result as any).isMobileDictated
+            ? '<div style="font-size: 8.5px; color: #64748b; margin-top: 3px; font-style: italic;">Nguồn lời nói: máy nghe học sinh đọc lại trên điện thoại sau khi ghi âm.</div>'
+            : data.isMobileReEntered || (result as any).isMobileReEntered
+            ? '<div style="font-size: 8.5px; color: #64748b; margin-top: 3px; font-style: italic;">Nguồn lời nói: học sinh nhập lại trên điện thoại sau khi ghi âm.</div>'
             : (data.isManuallyEdited || (result as any).isManuallyEdited)
             ? '<div style="font-size: 8.5px; color: #64748b; margin-top: 3px; font-style: italic;">Lời nói có chỉnh sửa tay sau khi máy nhận diện.</div>'
             : ''
